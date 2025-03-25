@@ -6,7 +6,8 @@ import csv
 import re
 import time
 from dotenv import load_dotenv
-from translate import Translator
+from transformers import MarianMTModel, MarianTokenizer
+import torch
 from PIL import Image, ImageEnhance, ImageFilter
 from io import BytesIO
 import spacy
@@ -32,12 +33,92 @@ if 'last_searches' not in st.session_state:
 if 'recommender' not in st.session_state:
     st.session_state.recommender = GameRecommender()
 
-# Inicializar el caché de traducciones
-if 'translation_cache' not in st.session_state:
-    st.session_state.translation_cache = {}
+# Configurar el modelo de traducción MarianMT
+model_name = "Helsinki-NLP/opus-mt-en-es"
+model_path = "models/marianmt"
 
-# Configurar el traductor al español
-translator = Translator(to_lang="es")
+def load_model():
+    """Cargar o descargar el modelo MarianMT."""
+    try:
+        # Intentar cargar el modelo localmente
+        tokenizer = MarianTokenizer.from_pretrained(model_path)
+        model = MarianMTModel.from_pretrained(model_path)
+        return tokenizer, model
+    except:
+        # Si no existe localmente, descargarlo y guardarlo
+        tokenizer = MarianTokenizer.from_pretrained(model_name)
+        model = MarianMTModel.from_pretrained(model_name)
+        
+        # Guardar el modelo y el tokenizador
+        tokenizer.save_pretrained(model_path)
+        model.save_pretrained(model_path)
+        
+        return tokenizer, model
+
+# Cargar el modelo al inicio
+tokenizer, model = load_model()
+
+# Crear la carpeta 'cache' si no existe
+if not os.path.exists("cache"):
+    os.makedirs("cache")
+
+# Función para cargar o inicializar el caché
+def load_cache():
+    """Cargar el caché de traducciones desde un archivo."""
+    cache_file = "cache/translations.json"
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+# Función para guardar el caché
+def save_cache(cache):
+    """Guardar el caché de traducciones en un archivo."""
+    cache_file = "cache/translations.json"
+    try:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        st.error(f"Error al guardar el caché: {e}")
+
+# Cargar el caché al inicio
+cache = load_cache()
+
+def translate_text(text):
+    """Traduce el texto del inglés al español usando MarianMT."""
+    try:
+        # Verificar si la traducción ya está en caché
+        if text in cache:
+            return cache[text]
+            
+        # Dividir el texto en párrafos usando los saltos de línea
+        paragraphs = text.split('\n')
+        translated_paragraphs = []
+        
+        # Traducir cada párrafo por separado
+        for paragraph in paragraphs:
+            if paragraph.strip():  # Solo traducir si el párrafo no está vacío
+                inputs = tokenizer(paragraph, return_tensors="pt", padding=True)
+                translated = model.generate(**inputs)
+                translated_paragraph = tokenizer.decode(translated[0], skip_special_tokens=True)
+                translated_paragraphs.append(translated_paragraph)
+            else:
+                translated_paragraphs.append('')  # Mantener los saltos de línea vacíos
+        
+        # Unir los párrafos traducidos con saltos de línea
+        translated_text = '\n'.join(translated_paragraphs)
+        
+        # Guardar en caché
+        cache[text] = translated_text
+        save_cache(cache)
+        
+        return translated_text
+    except Exception as e:
+        st.error(f"Error al traducir el texto: {e}")
+        return text
 
 # Crear la carpeta 'data' si no existe
 if not os.path.exists("data"):
@@ -125,6 +206,10 @@ def extract_text_ocr_space(image_bytes):
 
 # Función para extraer el nombre del juego y otros detalles en lenguaje natural
 def extract_game_name(user_input):
+    """Extrae el nombre del juego y otros detalles de la entrada del usuario."""
+    # Traducir el texto al español si está en inglés
+    translated_input = translate_text(user_input)
+    
     # Patrones para detectar consultas comunes
     patterns = [
         r"(?:háblame de|dime información sobre|qué sabes de|quiero saber sobre|busca)\s+(.+)",
@@ -134,12 +219,12 @@ def extract_game_name(user_input):
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, user_input, re.IGNORECASE)
+        match = re.search(pattern, translated_input, re.IGNORECASE)
         if match:
             return match.groups()  # Devuelve una tupla con los grupos capturados
 
     # Si no se encuentra ningún patrón, devolver la entrada completa
-    return (user_input.strip(),)
+    return (translated_input.strip(),)
 
 def interpret_query(user_query):
     """Analiza la consulta del usuario y extrae los filtros relevantes."""
@@ -291,62 +376,6 @@ def save_game_info_json(data):
         except Exception as e:
             print(f"Error al procesar el archivo JSON: {e}")
 
-def translate_text(text, to_lang="es"):
-    """
-    Traduce el texto al español usando el módulo translate.
-    Utiliza caché para traducciones previas y maneja textos largos.
-    """
-    if not text:
-        return ""
-    
-    try:
-        # Verificar si la traducción ya está en caché
-        cache_key = f"{text}_{to_lang}"
-        if cache_key in st.session_state.translation_cache:
-            return st.session_state.translation_cache[cache_key]
-            
-        translator = Translator(to_lang=to_lang)
-        
-        # Si el texto es muy largo, lo dividimos en partes
-        max_length = 200
-        if len(text) > max_length:
-            parts = []
-            while text:
-                if len(text) <= max_length:
-                    parts.append(text)
-                    break
-                
-                last_space = text[:max_length].rfind(' ')
-                if last_space == -1:
-                    last_space = max_length
-                
-                parts.append(text[:last_space])
-                text = text[last_space:].strip()
-            
-            # Traducir cada parte y almacenar en caché
-            translations = []
-            for part in parts:
-                part_cache_key = f"{part}_{to_lang}"
-                if part_cache_key in st.session_state.translation_cache:
-                    translated_part = st.session_state.translation_cache[part_cache_key]
-                else:
-                    translated_part = translator.translate(part)
-                    st.session_state.translation_cache[part_cache_key] = translated_part
-                translations.append(translated_part)
-            
-            result = ' '.join(translations)
-            st.session_state.translation_cache[cache_key] = result
-            return result
-        else:
-            # Traducir y almacenar en caché para textos cortos
-            translation = translator.translate(text)
-            st.session_state.translation_cache[cache_key] = translation
-            return translation
-            
-    except Exception as e:
-        st.error(f"Error al traducir el texto: {str(e)}")
-        return text
-
 def get_game_info(user_input):
     """
     Obtiene la información del juego desde RAWG.io API
@@ -355,21 +384,21 @@ def get_game_info(user_input):
         # URL base de la API de RAWG
         search_url = "https://api.rawg.io/api/games"
         
-        # Parámetros de búsqueda optimizados
+        # Parámetros de búsqueda
         params = {
             "key": RAWG_API_KEY,
             "search": user_input,
-            "page_size": 1  # Reducir a 1 para obtener solo el primer resultado
+            "page_size": 5
         }
         
-        # Realizar la búsqueda con timeout
-        response = requests.get(search_url, params=params, timeout=5)
+        # Realizar la búsqueda
+        response = requests.get(search_url, params=params)
         
         if response.status_code == 200:
             data = response.json()
             
             if data["count"] > 0:
-                game = data["results"][0]
+                game = data["results"][0]  # Tomamos el primer resultado
                 
                 # Obtener detalles completos del juego usando su ID
                 game_id = game["id"]
@@ -377,121 +406,53 @@ def get_game_info(user_input):
                 details_params = {
                     "key": RAWG_API_KEY
                 }
-                
-                # Realizar la llamada a detalles con timeout
-                details_response = requests.get(details_url, params=details_params, timeout=5)
+                details_response = requests.get(details_url, params=details_params)
                 
                 if details_response.status_code == 200:
                     game_details = details_response.json()
                     
                     # Limpiar la descripción de etiquetas HTML
                     description = game_details.get("description", "No hay descripción disponible.")
-                    description = re.sub(r'<br\s*/?>|<p>|</p>', '\n', description)
-                    description = re.sub(r'<[^>]+>', '', description)
-                    description = html.unescape(description)
-                    description = re.sub(r'\n\s*\n', '\n\n', description)
-                    description = description.strip()
+                    description = re.sub(r'<br\s*/?>|<p>|</p>', '\n', description)  # Reemplazar <br/>, <p> con saltos de línea
+                    description = re.sub(r'<[^>]+>', '', description)  # Eliminar otras etiquetas HTML
+                    description = html.unescape(description)  # Convertir entidades HTML
+                    description = re.sub(r'\n\s*\n', '\n\n', description)  # Eliminar líneas vacías múltiples
+                    description = description.strip()  # Eliminar espacios en blanco al inicio y final
                     
-                    # Guardar en el historial de búsquedas solo si es necesario
-                    if len(st.session_state.last_searches) < 3:
-                        st.session_state.last_searches.append({
-                            "name": game_details["name"],
-                            "genres": [genre["name"] for genre in game_details.get("genres", [])],
-                            "rating": game_details.get("rating", 0)
-                        })
-                    else:
-                        # Actualizar el más reciente
-                        st.session_state.last_searches[-1] = {
-                            "name": game_details["name"],
-                            "genres": [genre["name"] for genre in game_details.get("genres", [])],
-                            "rating": game_details.get("rating", 0)
-                        }
+                    # Traducir el texto usando MarianMT
+                    translated_description = translate_text(description)
                     
-                    # Crear el objeto de información del juego
+                    # Preparar los datos del juego
                     game_info = {
-                        "name": game_details["name"],
-                        "description": description,
-                        "released": game_details.get("released", "Fecha desconocida"),
+                        "id": game_id,
+                        "name": game_details.get("name", "Nombre no disponible"),
+                        "description": translated_description,  # Usar la descripción traducida
                         "rating": game_details.get("rating", 0),
-                        "platforms": [platform["platform"]["name"] for platform in game_details.get("platforms", [])],
-                        "genres": [genre["name"] for genre in game_details.get("genres", [])],
-                        "image_url": game_details.get("background_image", None),
-                        "metacritic": game_details.get("metacritic", "N/A"),
-                        "esrb_rating": game_details.get("esrb_rating", {}).get("name", "No disponible"),
-                        "website": game_details.get("website", "No disponible")
+                        "rating_count": game_details.get("ratings_count", 0),
+                        "released": game_details.get("released", "Fecha no disponible"),
+                        "platforms": [p["platform"]["name"] for p in game_details.get("platforms", [])],
+                        "genres": [g["name"] for g in game_details.get("genres", [])],
+                        "developers": [d["name"] for d in game_details.get("developers", [])],
+                        "publishers": [p["name"] for p in game_details.get("publishers", [])],
+                        "background_image": game_details.get("background_image", ""),
+                        "metacritic": game_details.get("metacritic", None),
+                        "esrb_rating": game_details.get("esrb_rating", {}).get("name", None)
                     }
                     
-                    # Guardar la información en archivos
-                    save_game_info_csv(game_info)
+                    # Guardar la información del juego
                     save_game_info_json([game_info])
+                    save_game_info_csv(game_info)
                     
                     return game_info
-            
-            return None
+                else:
+                    st.error(f"Error al obtener los detalles del juego: {details_response.status_code}")
+            else:
+                st.error("No se encontraron juegos con ese nombre.")
         else:
-            st.error(f"Error al conectar con la API de RAWG: {response.status_code}")
-            return None
-            
-    except requests.exceptions.Timeout:
-        st.error("Tiempo de espera agotado al conectar con la API")
-        return None
+            st.error(f"Error en la búsqueda: {response.status_code}")
     except Exception as e:
-        st.error(f"Error al obtener información del juego: {str(e)}")
-        return None
-
-def display_game_info(game_info):
-    """
-    Muestra la información del juego en la interfaz de usuario.
-    """
-    if not game_info:
-        st.error("No se encontró información del juego.")
-        return
-
-    try:
-        # Traducir la información antes de mostrarla
-        translated_info = {
-            "name": translate_text(game_info.get("name", "Sin nombre")),
-            "description": translate_text(game_info.get("description", "Sin descripción")),
-            "released": translate_text(game_info.get("released", "Fecha desconocida")),
-            "rating": game_info.get("rating", 0),
-            "platforms": [translate_text(platform) for platform in game_info.get("platforms", [])],
-            "genres": [translate_text(genre) for genre in game_info.get("genres", [])],
-            "image_url": game_info.get("image_url", None),
-            "metacritic": game_info.get("metacritic", "N/A"),
-            "esrb_rating": translate_text(game_info.get("esrb_rating", "No disponible")),
-            "website": game_info.get("website", "No disponible")
-        }
-
-        # Mostrar la información traducida
-        st.title(f"{translated_info['name']}")
-        
-        if translated_info["image_url"]:
-            st.image(translated_info["image_url"], use_container_width=True)
-        
-        st.markdown(f"**Descripción:**")
-        st.markdown(translated_info["description"])
-        
-        st.markdown("**Información del juego:**")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown(f"**Fecha de lanzamiento:** {translated_info['released']}")
-            st.markdown(f"**Rating:** {translated_info['rating']}/5")
-            st.markdown(f"**Metacritic:** {translated_info['metacritic']}")
-            st.markdown(f"**Clasificación ESRB:** {translated_info['esrb_rating']}")
-            st.markdown(f"**Sitio web:** {translated_info['website']}")
-        
-        with col2:
-            st.markdown("**Géneros:**")
-            for genre in translated_info["genres"]:
-                st.markdown(f"- {genre}")
-            
-            st.markdown("**Plataformas:**")
-            for platform in translated_info["platforms"]:
-                st.markdown(f"- {platform}")
-                
-    except Exception as e:
-        st.error(f"Error al mostrar la información: {str(e)}")
+        st.error(f"Error al obtener la información del juego: {str(e)}")
+    return None
 
 def show_recommendations():
     """Muestra las recomendaciones en la barra lateral"""
@@ -507,6 +468,44 @@ def show_recommendations():
             for game in recommendations:
                 st.sidebar.write(f"- {game['name']} ({game['similarity']} similar)")
                 st.sidebar.write(f"  Géneros: {', '.join(game['genres'])}")
+
+def display_game_info(game_info):
+    # Mostrar imagen del juego
+    if game_info["background_image"]:
+        st.image(game_info["background_image"], caption=game_info["name"])
+    
+    # Información principal
+    st.header("Información del Juego")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write(f"🎯 **Nombre:** {game_info['name']}")
+        st.write(f"📅 **Fecha de lanzamiento:** {game_info['released']}")
+        st.write(f"⭐ **Rating:** {game_info['rating']}/5")
+        if 'metacritic' in game_info and game_info['metacritic'] is not None:
+            st.write(f"🎯 **Metacritic:** {game_info['metacritic']}")
+    
+    with col2:
+        st.write(f"🎮 **Plataformas:** {', '.join(game_info['platforms'])}")
+        st.write(f"🎲 **Géneros:** {', '.join(game_info['genres'])}")
+        if 'esrb_rating' in game_info and game_info['esrb_rating'] is not None:
+            st.write(f"📝 **ESRB Rating:** {game_info['esrb_rating']}")
+    
+    # Descripción
+    st.subheader("Descripción")
+    st.markdown(game_info["description"])
+    
+    # Recomendaciones basadas en géneros similares
+    if len(st.session_state.last_searches) >= 3:
+        st.subheader("Recomendaciones basadas en tus búsquedas")
+        genres_count = {}
+        for search in st.session_state.last_searches:
+            for genre in search["genres"]:
+                genres_count[genre] = genres_count.get(genre, 0) + 1
+        
+        most_common_genres = sorted(genres_count.items(), key=lambda x: x[1], reverse=True)[:2]
+        if most_common_genres:
+            st.write(f"Basado en tus búsquedas, te gustan los juegos de {', '.join([g[0] for g in most_common_genres])}.")
 
 def main():
     st.title("🎮 Asistente de Juegos")

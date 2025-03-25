@@ -15,11 +15,9 @@ Bienvenido a **ReviewGameIA**, un proyecto innovador que combina inteligencia ar
 ## 🛠️ Tecnologías Utilizadas
 
 🔹 **Python** - Lenguaje principal de desarrollo.  
-🔹 **API de RAWG.IO** - Fuente principal de información sobre videojuegos.   
+🔹 **API de Giant Bomb** - Fuente principal de información sobre videojuegos.   
 🔹 **OCR Mejorado** - Tecnología avanzada de reconocimiento de texto en imágenes.  
 🔹 **GitHub** - Control de versiones y almacenamiento del proyecto.  
-
-
 
 ---
 
@@ -30,7 +28,7 @@ Sigue estos pasos para ejecutar **ReviewGameIA** en tu máquina:
 ### 🔧 Requisitos Previos
 - Python 3.12.2
 - Git instalado
-- Clave de API de RAWG.IO y space.OCR
+- Clave de API de Giant Bomb y space.OCR
 
 ### 📥 Clonar el Repositorio
 ```bash

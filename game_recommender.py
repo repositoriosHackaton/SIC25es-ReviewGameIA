@@ -136,3 +136,46 @@ class GameRecommender:
             recommendations.append(game_info)
         
         return recommendations
+
+    def filter_games_by_category(self, category, min_rating=4.0):
+        """Filtra juegos por categoría y rating mínimo"""
+        filtered_games = []
+        for game_name, game_info in self.game_info.items():
+            if category in game_info.get("genres", []) and float(game_info.get("rating", 0.0)) >= min_rating:
+                filtered_games.append({
+                    "name": game_name,
+                    "rating": game_info.get("rating", "Sin calificación"),
+                    "genres": game_info.get("genres", []),
+                    "platforms": game_info.get("platforms", []),
+                    "released": game_info.get("released", "Fecha no disponible")
+                })
+        return sorted(filtered_games, key=lambda x: float(x["rating"]), reverse=True)
+
+    def get_recommendations_by_category(self, category, num_recommendations=5):
+        """Obtiene recomendaciones de juegos por categoría con buen rating"""
+        # Primero filtramos los juegos por la categoría deseada
+        filtered_games = self.filter_games_by_category(category)
+        
+        # Si no hay juegos en la categoría, retornamos una lista vacía
+        if not filtered_games:
+            return []
+            
+        # Convertimos los juegos filtrados a un formato adecuado para el modelo
+        games_data = [{"name": game["name"], "genres": game["genres"], 
+                      "rating": game["rating"], "released": game["released"]}
+                     for game in filtered_games]
+        
+        # Actualizamos el modelo con los juegos filtrados
+        self.update_model(games_data)
+        
+        # Tomamos los primeros juegos de la categoría como base para las recomendaciones
+        base_games = filtered_games[:3]
+        
+        # Obtenemos las recomendaciones basadas en similitud
+        recommendations = self.get_recommendations(base_games, num_recommendations)
+        
+        # Aseguramos que las recomendaciones tengan un rating mínimo
+        recommendations = [game for game in recommendations 
+                         if float(game.get("rating", 0.0)) >= 4.0]
+        
+        return recommendations
