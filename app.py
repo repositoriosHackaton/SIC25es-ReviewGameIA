@@ -196,8 +196,16 @@ def extract_text_ocr_space(image_bytes):
                 continue
 
             if isinstance(result, dict) and "ParsedResults" in result:
-                extracted_text = result["ParsedResults"][0].get("ParsedText", "").replace("\n", " ")
-                return extracted_text if extracted_text else "No se detectó texto en la imagen."
+                parsed_results = result["ParsedResults"]
+                if parsed_results and isinstance(parsed_results, list):
+                    extracted_text = parsed_results[0].get("ParsedText", "").replace("\n", " ")
+                    return extracted_text if extracted_text else "No se detectó texto en la imagen."
+                else:
+                    st.error("No se pudieron extraer resultados válidos del OCR")
+                    return "No se detectó texto en la imagen."
+            else:
+                st.error(f"Error al procesar la respuesta de OCR.space: {result}")
+                return "No se detectó texto en la imagen."
 
         print(f"La clave API {api_key[:5]}... falló o alcanzó su límite.")  # Mostrar solo parte de la clave
 
@@ -227,7 +235,6 @@ def extract_game_name(user_input):
     return (translated_input.strip(),)
 
 def interpret_query(user_query):
-    """Analiza la consulta del usuario y extrae los filtros relevantes."""
 
     # Si user_query es una tupla, convertirla en una cadena
     if isinstance(user_query, tuple):
@@ -280,6 +287,26 @@ def interpret_query(user_query):
     #print(f"Filtros aplicados: {filters}")
     
     return filters
+
+def word_filter(user_query):
+
+    # Si user_query es una tupla, convertirla en una cadena
+    if isinstance(user_query, tuple):
+        user_query = " ".join(user_query)
+    
+    # Asegurarse de que user_query sea una cadena y convertirla a minúsculas
+    user_query = str(user_query).lower()
+
+    # Procesar el texto con spaCy
+    doc = nlp(user_query)
+
+    # Palabras que no aportan valor para los filtros (palabras basura)
+    stop_words = {"todos", "juegos", "dame", "quiero", "información", "podrías", "darme", "consultar", "de", "en", "sobre", "para", "con", "y", "la", "el", "los", "las", "un", "una", "que", "quisiera", "saber", "quiero", "hablame", "acerca", "del", "alrededor", "acerca"}
+
+    # Filtrar las palabras relevantes (eliminamos las palabras vacías y de puntuación)
+    filtered_words = " ".join(token.text for token in doc if token.text not in stop_words and not token.is_punct)
+    
+    return filtered_words
 
 def build_api_url(filters, api_key):
     base_url = f"https://api.rawg.io/api/games"
@@ -380,6 +407,7 @@ def get_game_info(user_input):
     """
     Obtiene la información del juego desde RAWG.io API
     """
+    user_input_filter = word_filter(user_input)
     try:
         # URL base de la API de RAWG
         search_url = "https://api.rawg.io/api/games"
@@ -387,7 +415,7 @@ def get_game_info(user_input):
         # Parámetros de búsqueda
         params = {
             "key": RAWG_API_KEY,
-            "search": user_input,
+            "search": user_input_filter,
             "page_size": 5
         }
         
